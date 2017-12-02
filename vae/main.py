@@ -8,6 +8,7 @@ from torch.nn import functional as F
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 
+from datetime import datetime
 
 parser = argparse.ArgumentParser(description='VAE MNIST Example')
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',
@@ -20,6 +21,10 @@ parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
+parser.add_argument('--model', type=int, default=0,
+                    help='model id')
+parser.add_argument('--lr', type=float, default=1e-3,
+                    help='lr for Adam')
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -29,7 +34,7 @@ if args.cuda:
     torch.cuda.manual_seed(args.seed)
 
 
-kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+kwargs = {'num_workers': 8, 'pin_memory': True} if args.cuda else {}
 train_loader = torch.utils.data.DataLoader(
     datasets.MNIST('../data', train=True, download=True,
                    transform=transforms.ToTensor()),
@@ -40,8 +45,30 @@ test_loader = torch.utils.data.DataLoader(
 
 
 class VAE(nn.Module):
+
     def __init__(self):
         super(VAE, self).__init__()
+
+    def reparameterize(self, mu, logvar):
+        if self.training:
+          std = logvar.mul(0.5).exp_()
+          eps = Variable(std.data.new(std.size()).normal_())
+          return eps.mul(std).add_(mu)
+        else:
+          return mu
+
+    def view_input(self, x):
+        return x.view(-1, 784)
+
+    def forward(self, x):
+        mu, logvar = self.encode(self.view_input(x))
+        z = self.reparameterize(mu, logvar)
+        return self.decode(z), mu, logvar
+
+
+class VAE0(VAE):
+    def __init__(self):
+        super(VAE0, self).__init__()
 
         self.fc1 = nn.Linear(784, 400)
         self.fc21 = nn.Linear(400, 20)
@@ -56,25 +83,108 @@ class VAE(nn.Module):
         h1 = self.relu(self.fc1(x))
         return self.fc21(h1), self.fc22(h1)
 
-    def reparameterize(self, mu, logvar):
-        if self.training:
-          std = logvar.mul(0.5).exp_()
-          eps = Variable(std.data.new(std.size()).normal_())
-          return eps.mul(std).add_(mu)
-        else:
-          return mu
-
     def decode(self, z):
         h3 = self.relu(self.fc3(z))
         return self.sigmoid(self.fc4(h3))
 
-    def forward(self, x):
-        mu, logvar = self.encode(x.view(-1, 784))
-        z = self.reparameterize(mu, logvar)
-        return self.decode(z), mu, logvar
+
+class VAE1(VAE):
+    def __init__(self):
+        super(VAE1, self).__init__()
+
+        self.fc1 = nn.Linear(784, 400)
+        self.fc1b = nn.Linear(400, 400)
+        self.fc21 = nn.Linear(400, 20)
+        self.fc22 = nn.Linear(400, 20)
+        self.fc3 = nn.Linear(20, 400)
+        self.fc3b = nn.Linear(400, 400)
+        self.fc4 = nn.Linear(400, 784)
+
+        self.relu = nn.ReLU()
+        self.sigmoid = nn.Sigmoid()
+
+    def encode(self, x):
+        h1 = self.relu(self.fc1(x))
+        h1 = self.relu(self.fc1b(h1))
+        return self.fc21(h1), self.fc22(h1)
+
+    def decode(self, z):
+        h3 = self.relu(self.fc3(z))
+        h3 = self.relu(self.fc3b(h3))
+        return self.sigmoid(self.fc4(h3))
 
 
-model = VAE()
+class VAE_tanh(VAE):
+    def __init__(self):
+        super(VAE_tanh, self).__init__()
+
+        self.fc1 = nn.Linear(784, 400)
+        self.fc1b = nn.Linear(400, 400)
+        self.fc21 = nn.Linear(400, 20)
+        self.fc22 = nn.Linear(400, 20)
+        self.fc3 = nn.Linear(20, 400)
+        self.fc3b = nn.Linear(400, 400)
+        self.fc4 = nn.Linear(400, 784)
+
+        self.relu = nn.ReLU()
+        self.sigmoid = nn.Sigmoid()
+        self.tanh = nn.Tanh()
+
+    def encode(self, x):
+        h1 = self.tanh(self.fc1(x))
+        h1 = self.tanh(self.fc1b(h1))
+        return self.fc21(h1), self.fc22(h1)
+
+    def decode(self, z):
+        h3 = self.tanh(self.fc3(z))
+        h3 = self.tanh(self.fc3b(h3))
+        return self.sigmoid(self.fc4(h3))
+
+
+class LenetVAE(VAE):
+    def __init__(self):
+
+        super(LenetVAE, self).__init__()
+
+        self.conv11 = nn.Conv2d(1, 10, kernel_size=5)
+        self.conv12 = nn.Conv2d(10, 20, kernel_size=5)
+        self.fc11 = nn.Linear(320, 20)
+        self.fc12 = nn.Linear(320, 20)
+
+        self.fc22 = nn.Linear(20, 320)
+        self.conv21 = nn.Conv2d(20, 10, kernel_size=5)
+        self.conv22 = nn.Conv2d(10, 1, kernel_size=5)
+
+    def encode(self, x):
+        print(x.size())
+        x = F.tanh(F.max_pool2d(self.conv11(x), 2))
+        print(x.size())
+        x = F.tanh(F.max_pool2d(self.conv12(x), 2))
+        x = x.view(-1, 320)
+        print(x.size())
+        return self.fc11(x), self.fc12(x)
+
+    def decode(self, z):
+        z = F.tanh(self.fc22(z))
+        print(z.size())
+        z = z.view(-1, 20, 4, 4)
+        print(z.size())
+        z = F.tanh(F.max_pool2d(self.conv21(z), 2))
+        z = F.sigmoid(F.max_pool2d(self.conv22(z), 2))
+        z = z.view(-1, 784)
+        return z
+
+    def view_input(self, x):
+        return x
+
+
+models = {
+ 0: VAE0,
+ 1: VAE1,
+ 2: VAE_tanh
+}
+
+model = models[args.model]()
 if args.cuda:
     model.cuda()
 
@@ -93,7 +203,7 @@ def loss_function(recon_x, x, mu, logvar):
     return BCE + KLD
 
 
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
+optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
 
 def train(epoch):
@@ -139,8 +249,12 @@ def test(epoch):
     print('====> Test set loss: {:.4f}'.format(test_loss))
 
 
+start = datetime.now()
+
 for epoch in range(1, args.epochs + 1):
+    beg = datetime.now()
     train(epoch)
+    print("@ %s / %s" % (str(datetime.now()-start), str(datetime.now()-beg)))
     test(epoch)
     sample = Variable(torch.randn(64, 20))
     if args.cuda:
